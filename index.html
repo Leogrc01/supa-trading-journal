@@ -325,8 +325,14 @@ input[type="file"]{display:none;}
     <div class="nav-item" data-page="params"><span class="icon">⚙</span> Paramètres</div>
   </nav>
   <div class="sidebar-bottom">
-    <div class="capital-label">Capital actuel</div>
+    <div style="padding:10px 0 12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+      <div style="font-size:9px;letter-spacing:2px;color:var(--text2);text-transform:uppercase;margin-bottom:5px">Portefeuille total</div>
+      <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700;color:var(--text)" id="portfolio-total">—</div>
+      <div style="font-size:10px;color:var(--text2);margin-top:3px" id="portfolio-pnl">—</div>
+    </div>
+    <div class="capital-label">Compte actif</div>
     <div class="capital-amount" id="sidebar-capital">—</div>
+    <div style="font-size:10px;color:var(--text2);margin-top:3px" id="sidebar-pnl-pct">—</div>
     <div class="sync-label"><span class="sync-dot" id="sync-dot"></span><span id="sync-label">Connexion…</span></div>
     <div class="sidebar-credit">TRADING JOURNAL · SUPABASE</div>
   </div>
@@ -607,6 +613,7 @@ const COLORS=['#00e5a0','#0099ff','#ff4466','#ffaa00','#9966ff','#ff6b35','#00cc
 const PAIRS_DEF=[{pair:'EUR/USD',pipVal:10,sl:2.5},{pair:'GBP/USD',pipVal:10,sl:3},{pair:'XAU/USD',pipVal:1,sl:50},{pair:'NAS100',pipVal:1,sl:20},{pair:'US30',pipVal:1,sl:30},{pair:'USD/JPY',pipVal:7.7,sl:3},{pair:'GBP/JPY',pipVal:7.7,sl:5}];
 let pairsConfig=JSON.parse(JSON.stringify(PAIRS_DEF));
 let accounts=[],activeId=null,trades=[],editingId=null,calYear,calMonth,planValue=null,selectedTags=[];
+let accountPnls={}; // {accountId: totalPnl} — chargé en arrière-plan pour tous les comptes
 
 const acc=()=>accounts.find(a=>a.id===activeId)||accounts[0];
 const cur=()=>acc()?.currency||'$';
@@ -729,9 +736,44 @@ function applyAccountTheme(){
 function updateSidebar(){
   const a=acc();if(!a)return;
   const c=getCap();
+  const pnlAcc=c-(a.capital||0);
+  const pctAcc=pnlAcc/(a.capital||1)*100;
   document.getElementById('sidebar-capital').textContent=`${a.currency}${fmtN(c)}`;
   document.getElementById('az-sub').textContent=`${a.currency}${fmtN(c)}`;
   document.getElementById('mobile-capital').textContent=`${a.currency}${fmtN(c)}`;
+  const pnlEl=document.getElementById('sidebar-pnl-pct');
+  if(pnlEl){
+    pnlEl.textContent=`${pnlAcc>=0?'+':''}${a.currency}${Math.abs(pnlAcc).toFixed(2)} (${pctAcc>=0?'+':''}${pctAcc.toFixed(2)}%)`;
+    pnlEl.style.color=pnlAcc>=0?'var(--win)':'var(--red)';
+  }
+  updatePortfolioTotal();
+}
+
+function updatePortfolioTotal(){
+  // somme capital de départ + P&L de chaque compte
+  // On ne peut calculer que pour le compte actif (trades chargés)
+  // Pour les autres comptes, on affiche le capital de départ comme approximation
+  // à moins d'avoir allTrades chargé
+  if(!accounts.length) return;
+  const totalStart = accounts.reduce((s,a)=>s+parseFloat(a.capital||0),0);
+  // P&L du compte actif qu'on connaît
+  const activePnl = trades.reduce((s,t)=>s+parseFloat(t.pnl||0),0);
+  // Pour les autres comptes on utilise accountCapitals si disponible
+  let otherPnl = 0;
+  accounts.forEach(a=>{
+    if(a.id!==activeId && accountPnls[a.id]!==undefined) otherPnl+=accountPnls[a.id];
+  });
+  const totalCurrent = totalStart + activePnl + otherPnl;
+  const totalPnl = activePnl + otherPnl;
+  const totalPct = totalPnl/totalStart*100;
+  const cur_ = acc()?.currency||'$';
+  const ptEl=document.getElementById('portfolio-total');
+  const ppEl=document.getElementById('portfolio-pnl');
+  if(ptEl) ptEl.textContent=`${cur_}${fmtN(totalCurrent)}`;
+  if(ppEl){
+    ppEl.textContent=`${totalPnl>=0?'+':''}${cur_}${Math.abs(totalPnl).toFixed(2)} (${totalPct>=0?'+':''}${totalPct.toFixed(2)}%)`;
+    ppEl.style.color=totalPnl>=0?'var(--win)':'var(--red)';
+  }
 }
 function setSyncStatus(s,lbl){
   document.getElementById('sync-dot').className='sync-dot '+s;
@@ -739,12 +781,26 @@ function setSyncStatus(s,lbl){
   const ps=document.getElementById('params-sync');if(ps)ps.textContent=lbl;
 }
 function renderAccountDropdownList(){
-  document.getElementById('dd-accounts-list').innerHTML=accounts.map(a=>`
-    <div class="dd-item ${a.id===activeId?'current':''}" onclick="switchAccount('${a.id}')">
+  document.getElementById('dd-accounts-list').innerHTML=accounts.map(a=>{
+    const isActive=a.id===activeId;
+    const liveCap=isActive?getCap():parseFloat(a.capital||0)+(accountPnls[a.id]||0);
+    const pnl=liveCap-parseFloat(a.capital||0);
+    const pct=pnl/(parseFloat(a.capital)||1)*100;
+    return `<div class="dd-item ${isActive?'current':''}" onclick="switchAccount('${a.id}')">
       <div class="dd-av" style="background:${a.color}">${a.name[0].toUpperCase()}</div>
-      <div class="dd-info"><div class="dd-name">${a.name}</div><div class="dd-cap">${a.currency}${parseFloat(a.capital).toLocaleString('fr-FR')} départ</div></div>
-      ${a.id===activeId?'<span class="dd-check">✓</span>':''}
-    </div>`).join('');
+      <div class="dd-info">
+        <div class="dd-name">${a.name}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">
+          <span class="dd-cap">${a.currency}${fmtN(liveCap)}</span>
+          <span style="font-size:9px;font-weight:600;color:${pnl>=0?'var(--win)':'var(--red)'}">${pnl>=0?'+':''}${pct.toFixed(1)}%</span>
+        </div>
+        <div style="height:3px;background:var(--border2);border-radius:2px;margin-top:4px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100,Math.abs(pct))}%;background:${pnl>=0?'var(--win)':'var(--red)'};border-radius:2px;transition:width 0.4s"></div>
+        </div>
+      </div>
+      ${isActive?'<span class="dd-check">✓</span>':''}
+    </div>`;
+  }).join('');
 }
 function renderParamsAccountList(){
   document.getElementById('params-account-list').innerHTML=accounts.map(a=>`
@@ -781,6 +837,8 @@ async function loadTrades(){
   const a=acc();if(!a)return;
   try{
     trades=await sb(`trades?select=*&account_id=eq.${a.id}&order=date.asc`);
+    // update local pnl cache for active account
+    accountPnls[a.id]=trades.reduce((s,t)=>s+parseFloat(t.pnl||0),0);
     setSyncStatus('ok',`${a.name} · ${trades.length} trade${trades.length>1?'s':''}`);
     updateSidebar();
     const p=document.querySelector('.page.active')?.id?.replace('page-','');
@@ -789,7 +847,21 @@ async function loadTrades(){
     if(p==='stats')renderStats();
     if(p==='calendar')renderCalendar();
     if(p==='resume')renderResume();
+    // load other accounts P&L in background
+    loadOtherAccountsPnl();
   }catch(e){setSyncStatus('error','Erreur connexion');showToast('⚠ '+e.message,true);}
+}
+
+async function loadOtherAccountsPnl(){
+  const otherAccounts=accounts.filter(a=>a.id!==activeId);
+  for(const a of otherAccounts){
+    try{
+      const data=await sb(`trades?select=pnl&account_id=eq.${a.id}`);
+      accountPnls[a.id]=data.reduce((s,t)=>s+parseFloat(t.pnl||0),0);
+    }catch(e){}
+  }
+  updatePortfolioTotal();
+  renderAccountDropdownList();
 }
 async function insertTrade(t){return(await sb('trades',{method:'POST',body:JSON.stringify(t),prefer:'return=representation'}))[0];}
 async function updateTrade(id,t){return(await sb(`trades?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(t),prefer:'return=representation'}))[0];}
